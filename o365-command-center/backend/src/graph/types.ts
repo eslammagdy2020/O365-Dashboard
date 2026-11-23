@@ -1,5 +1,5 @@
 /**
- * T0 FROZEN GRAPH SHAPES (PROPOSAL — pending owner confirmation).
+ * T0 FROZEN GRAPH SHAPES (CONFIRMED FROZEN).
  * Workers: import these; do NOT add fields or create parallel shapes.
  *
  * Most fields are optional because a delta page may omit them. An omitted
@@ -29,7 +29,9 @@ export type GraphMessage = {
   isRead?: boolean;
   importance?: 'low' | 'normal' | 'high';
   hasAttachments?: boolean;
-  flag?: { flagStatus?: 'notFlagged' | 'flagged' | 'complete' };
+  flag?: {
+    flagStatus?: 'notFlagged' | 'flagged' | 'complete';
+  };
   categories?: string[];
   bodyPreview?: string | null;
   parentFolderId?: string;

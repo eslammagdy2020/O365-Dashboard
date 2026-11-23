@@ -1,6 +1,6 @@
-# Milestone 1 — Frozen contracts (PROPOSAL)
+# Milestone 1 — Frozen contracts (CONFIRMED FROZEN)
 
-**Status:** PROPOSAL — pending owner confirmation. Not frozen until the owner confirms this document, `backend/src/db/migrations/001_init.sql` and `backend/src/graph/types.ts`.
+**Status:** CONFIRMED FROZEN — owner confirmed on 22 November 2026. Workers read this file; they do not change it.
 **Version:** draft 1 · 22 November 2026
 **Owner:** the human operator (orchestrator.md hard rule 3). Workers read this file; they do not change it.
 
@@ -94,7 +94,7 @@ Response rules: success is `{ data: <object> }`; lists are `{ items, total, offs
 
 1. The global concurrency limiter is **4** in-flight Graph operations.
 2. Each `$batch` inner request counts as **one** operation against that limiter — a batch of 4 inner requests consumes 4 slots. Batches share the limiter with ordinary sync and detail calls.
-3. At most 20 sub-requests per `$batch`; at most 2 concurrent batch calls.
+3. at most 20 sub-requests per `$batch`; at most 2 concurrent batch calls.
 4. Parse every sub-response status individually. Retry only items returning 429 or 5xx, at most 3 passes per batch; items still failing are reported failed per item.
 5. Honour `Retry-After` on each sub-response, not just on the batch response. Each sub-request carries its own `Prefer: IdType="ImmutableId"` header.
 

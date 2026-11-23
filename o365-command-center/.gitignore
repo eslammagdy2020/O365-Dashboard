@@ -1,0 +1,14 @@
+.env
+**/.env
+**/node_modules/
+**/dist/
+**/coverage/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-wal
+*.db-shm
+token-cache.bin
+**/logs/
+*.log
