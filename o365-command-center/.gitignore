@@ -12,3 +12,4 @@
 token-cache.bin
 **/logs/
 *.log
+*.tsbuildinfo
