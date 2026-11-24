@@ -3,7 +3,7 @@ import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { PublicClientApplication } from '@azure/msal-node';
 import { createApp } from '../src/app.js';
-import { GraphClient, GraphError } from '../src/graph/graphClient.js';
+import { assertReadOnlyRequest, GraphClient, GraphError } from '../src/graph/graphClient.js';
 import { executeBatch } from '../src/graph/batch.js';
 import { createMailApi, MESSAGE_SELECT } from '../src/graph/mailApi.js';
 import type { MsalClientProvider } from '../src/auth/requireAuth.js';
@@ -26,7 +26,7 @@ afterEach(() => {
 });
 afterAll(() => server.close());
 
-function makeClient() {
+function makeClient(fetcher?: typeof fetch) {
   const account = { homeAccountId: 'home-id' };
   const msal = {
     getTokenCache: () => ({ getAccountByHomeId: vi.fn(async () => account) }),
@@ -34,6 +34,7 @@ function makeClient() {
   } as unknown as PublicClientApplication;
   const client = new GraphClient(msal, 'home-id', {
     timeoutMs: 5_000,
+    ...(fetcher ? { fetcher } : {}),
     sleep: async (milliseconds) => {
       waits.push(milliseconds);
     },
@@ -43,6 +44,46 @@ function makeClient() {
 }
 
 describe('Graph read client and folders API', () => {
+  it('allows a GET request, including an omitted method', () => {
+    expect(() => assertReadOnlyRequest('/me', { method: 'GET' })).not.toThrow();
+    expect(() => assertReadOnlyRequest('/me', {})).not.toThrow();
+  });
+
+  it('allows a batch POST containing only GET requests, including an omitted method', () => {
+    expect(() =>
+      assertReadOnlyRequest('/$batch', {
+        method: 'POST',
+        body: JSON.stringify({ requests: [{ method: 'GET' }, { url: '/me' }] }),
+      }),
+    ).not.toThrow();
+  });
+
+  it('rejects a batch POST containing a non-GET request', () => {
+    expect(() =>
+      assertReadOnlyRequest('/$batch', {
+        method: 'POST',
+        body: JSON.stringify({ requests: [{ method: 'GET' }, { method: 'PATCH' }] }),
+      }),
+    ).toThrow(expect.objectContaining({ status: 400, code: 'forbidden' }));
+  });
+
+  it('rejects direct non-GET methods', () => {
+    expect(() => assertReadOnlyRequest('/me/messages/1', { method: 'DELETE' })).toThrow(
+      expect.objectContaining({ status: 400, code: 'forbidden' }),
+    );
+  });
+
+  it('rejects a forbidden request before token acquisition or fetch', async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    const { client, msal } = makeClient(fetcher);
+
+    await expect(
+      client.batchPost({ requests: [{ method: 'PATCH' }] }, 1),
+    ).rejects.toMatchObject({ status: 400, code: 'forbidden' });
+    expect(msal.acquireTokenSilent).not.toHaveBeenCalled();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it('sends delegated bearer headers and retries 429 using Retry-After', async () => {
     const { client } = makeClient();
     let calls = 0;

@@ -95,7 +95,7 @@ describe('T2 Entra sign-in and persistent sessions', () => {
     expect(authorizeUrl.searchParams.get('code_challenge')).toBeTruthy();
     expect(authorizeUrl.searchParams.get('code_challenge_method')).toBe('S256');
     expect(authorizeUrl.searchParams.get('prompt')).toBe('select_account');
-    expect(authorizeUrl.searchParams.get('scope')).toBe('User.Read Mail.ReadWrite');
+    expect(authorizeUrl.searchParams.get('scope')).toBe('User.Read Mail.Read');
 
     const callback = await agent
       .get(`/auth/callback?code=mock-code&state=${encodeURIComponent(state ?? '')}`)

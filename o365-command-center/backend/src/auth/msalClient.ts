@@ -4,7 +4,7 @@ import type { AppConfig } from '../config/env.js';
 import { resolveDataPaths } from '../config/paths.js';
 import { createTokenCachePlugin } from './tokenCache.js';
 
-export const delegatedScopes = ['User.Read', 'Mail.ReadWrite'];
+export const delegatedScopes = ['User.Read', 'Mail.Read'];
 export const cryptoProvider = new CryptoProvider();
 
 export async function createMsalClient(config: AppConfig): Promise<PublicClientApplication> {

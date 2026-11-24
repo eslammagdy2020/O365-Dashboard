@@ -177,4 +177,13 @@ Owner chose to hold all further work (commit, Milestone 2 planning, cleanup lane
 
 All Q1–Q24 in `QUESTIONS.md` resolved. Q8 (actual VIP addresses) deferred to Milestone 2 per owner. All worker changes remain **uncommitted** on baseline `742ffc5`.
 
+## Spec v1.3 adopted — read-only continuation note (24 Nov 2026)
+
+- Replaced the v1.2 `Office 365 Command Center Build Specification.md` verbatim with the owner-supplied `Office_365_Command_Center_Build_Specification_read_only_v1_3_5.md`; copied byte-for-byte with no hand edits.
+- Milestone 1 remains unchanged in scope. M2 (the former write milestone) is cancelled; the app is read-only.
+- Reconciliation applied: Graph delegated scopes now use `Mail.Read`; a GET-only Graph guard and focused tests were added. Read-only Phase 4 is done in this lane.
+- Owner must manually remove `Mail.ReadWrite` from the Entra app registration and sign in again; no Entra changes were made here.
+- Frozen artifacts deliberately remain untouched: `001_init.sql`, `contracts.test.ts`, `M1-frozen.md`, and `graph/types.ts`, including the unused `action_log` table and its guard assertion.
+- Still pending: Phase 3 (scoring, read API, dashboard and grid) and Phase 5 (analytics and settings). Phase 6 (optional AI) was declined by the owner and is effectively out of scope.
+
 Non-blocking known issues carried forward: (1) T6's `sync-recovery.test.ts` mocks lack Archive/Sent handlers, producing MSW stderr noise but no failures; (2) no settings editor UI (endpoints are implemented; `ApiService.ts`/settings page were outside T7's allow-list); (3) Vite large-chunk warning; (4) npm install reported audit vulnerabilities; (5) benchmark environment not verified against the stated reference hardware — README requests a reference-machine rerun.

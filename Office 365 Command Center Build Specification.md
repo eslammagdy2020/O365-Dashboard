@@ -1,6 +1,6 @@
 # Office 365 Command Center: Build Specification
 
-Version 1.2 · 21 November 2026 · Audience: AI coding agent, and the human reviewing its work
+Version 1.3 · 24 November 2026 · Audience: AI coding agent, and the human reviewing its work
 
 ## 0. How to use this spec
 
@@ -12,27 +12,31 @@ Version 1.2 · 21 November 2026 · Audience: AI coding agent, and the human revi
 
 ## 1. Product summary
 
-A local-only web app for one Microsoft 365 Business user. It signs in with Entra ID, mirrors the mailbox into a local SQLite database using Microsoft Graph delta queries, scores and categorizes messages, shows a daily dashboard, and performs safe bulk actions (move, archive, delete to Deleted Items, flag, read/unread, categorize) back to the mailbox.
+A local-only web app for one Microsoft 365 Business user. It signs in with Entra ID, mirrors the mailbox into a local SQLite database using Microsoft Graph delta queries, scores and categorizes messages, shows a daily dashboard, and is strictly read-only: it never changes the mailbox.
 
-Goals: fast UI on 50,000+ cached messages, explainable priority scores, safe bulk actions, no tokens in the browser.
+Goals: fast UI on 50,000+ cached messages, explainable priority scores, no mailbox writes, no tokens in the browser.
 
-Non-goals: sending email, multi-user or hosted deployment, webhooks or any public URL, mobile, calendar or Teams integration, permanent deletion, Outlook add-in.
+Non-goals: any mailbox write (move, archive, delete, flag, read state, categories), sending email, multi-user or hosted deployment, webhooks or any public URL, mobile, calendar or Teams integration, permanent deletion, Outlook add-in.
 
 ## 2. Corrections from the original plan
 
 1. Auth was broken. The original mixed browser MSAL (user login) with a backend client-credentials flow (`.default` scope), which cannot call `/me/messages`. This spec uses delegated Authorization Code + PKCE, performed by the backend.
-2. Removed unused permissions `Mail.Send` and `MailboxSettings.Read`.
+2. Removed unused permissions `Mail.Send` and `MailboxSettings.Read`. In v1.3 `Mail.ReadWrite` is also replaced by `Mail.Read`.
 3. Replaced `.top(100)` with a local cache filled by delta sync, with paging, throttling handling and `$batch`.
 4. Added the fields scoring needs (`hasAttachments`, `flag`, `conversationId`, `toRecipients`, and others). The Size column is dropped: message size is not a default Graph property and delta queries cannot expand the extended property needed for it.
 5. Scoring is null-safe, case-insensitive, configurable and explainable. The original read `email.sender`, but Graph returns `from.emailAddress.address`.
 6. Waiting For Response is now computed from Sent Items and conversation threads. Approval keywords map to Action Required, not Waiting For Response.
-7. Delete means move to Deleted Items. The Graph DELETE endpoint sends messages to Recoverable Items, so it is not used.
+7. Mailbox writes (move, delete, flag, read state, categories) are removed entirely in v1.3. See section 11.
 8. Dependencies removed: `jsonwebtoken`, `cors`, `axios`, `@microsoft/microsoft-graph-client`, `@azure/msal-browser`, `@azure/msal-react`.
 9. Department traffic needs directory data that requires extra permissions, so it becomes traffic by sender group (section 14).
 
+History only, not requirements: where any review note below mentions mailbox writes, actions, undo or cleanup, v1.3 supersedes it.
+
 Review pass, 20 November 2026 (v1.1): this version also applies the build-checklist review. Changes: a persistent SQLite session store (section 6), unfiltered delta sync because Graph caps a filtered delta at 5,000 messages (section 9), separate `base_score` and `score` with integer weights (section 10), a `conversation_state` table for dismissed waiting threads (section 8), response shapes (section 12.1), a 255-character AI input default (section 15), and a decisions list (section 21).
 
-Review pass 2, 21 November 2026 (v1.2): applies a second external review. Changes: session cookie `SameSite=Lax`, because Strict breaks the Entra callback (section 6); Host and Origin validation, Windows folder permissions and an exact purge contract (sections 6 and 16); an `effective_at` timestamp, Archive synced by default, transactional sync progress and sync-window changes (sections 8 and 9); category and undo writes that re-read Outlook state first (sections 10.5 and 11); Unicode-safe Arabic keyword matching, VIP subdomain rules and `setMinScore` combination (section 10); exact dashboard definitions and FTS escaping (section 12); AI configuration and recovery (section 15); a settings export in place of file-level database backup (section 8); and Windows 11 as the target.
+Review pass 3, 24 November 2026 (v1.3): the app is read-only. Removed the Actions section, the write endpoints, action log, undo, cleanup, Outlook category writes, the Phase 4 write work, and the Milestone 2 and deferred write contracts. `Mail.ReadWrite` becomes `Mail.Read`. Milestone 1 (login, read-only sync, resume, minimal grid) is unchanged and stays implemented.
+
+Review pass 2, 21 November 2026 (v1.2): applies a second external review. Changes: session cookie `SameSite=Lax`, because Strict breaks the Entra callback (section 6); Host and Origin validation, Windows folder permissions and an exact purge contract (sections 6 and 16); an `effective_at` timestamp, Archive synced by default, transactional sync progress and sync-window changes (sections 8 and 9); category and undo writes that re-read Outlook state first (SUPERSEDED by v1.3: all mailbox writes are removed); Unicode-safe Arabic keyword matching, VIP subdomain rules and `setMinScore` combination (section 10); exact dashboard definitions and FTS escaping (section 12); AI configuration and recovery (section 15); a settings export in place of file-level database backup (section 8); and Windows 11 as the target.
 
 ## 3. Tech stack (fixed)
 
@@ -59,7 +63,7 @@ o365-command-center/
 │   │   ├── db/            db.ts, sessionStore.ts, migrations/001_init.sql, repositories/
 │   │   ├── sync/          syncService.ts, deltaApplier.ts, scheduler.ts
 │   │   ├── services/      priorityService.ts, categoryService.ts, rulesEngine.ts,
-│   │   │                  waitingService.ts, actionService.ts, analyticsService.ts
+│   │   │                  waitingService.ts, analyticsService.ts
 │   │   ├── ai/            llmProvider.ts, summarizer.ts   (phase 6)
 │   │   ├── controllers/   mailController.ts, dashboardController.ts, ...
 │   │   └── routes/        mailRoutes.ts, ...
@@ -79,7 +83,7 @@ o365-command-center/
 
 1. Entra admin center, App registrations, New registration. Name: O365 Command Center. Account type: single tenant.
 2. Authentication, Add a platform, Mobile and desktop applications, custom redirect URI `http://localhost:5000/auth/callback`. This makes it a public client, so there is no client secret.
-3. API permissions, Microsoft Graph, Delegated: `User.Read`, `Mail.ReadWrite`, `offline_access`. Nothing else.
+3. API permissions, Microsoft Graph, Delegated: `User.Read`, `Mail.Read`, `offline_access`. Nothing else. If an earlier registration granted `Mail.ReadWrite`, remove that permission in Entra and sign in again so the stored consent and token cache carry only read access.
 4. These delegated permissions normally need no admin consent. If the tenant blocks user consent, ask the tenant admin to grant it.
 5. Copy the Application (client) ID and Directory (tenant) ID into `backend/.env`.
 
@@ -88,7 +92,7 @@ Fallback: if Entra rejects the public-client setup, register the Web platform in
 ## 6. Authentication and session
 
 - Flow: Authorization Code + PKCE, performed by the backend with msal-node. The browser never receives access or refresh tokens.
-- `GET /auth/login`: create the PKCE verifier and challenge plus a random `state`, store them in the server session, redirect to the Entra authorize URL with scopes `User.Read` and `Mail.ReadWrite`, `prompt=select_account`. MSAL adds `offline_access` by itself, so do not pass it explicitly.
+- `GET /auth/login`: create the PKCE verifier and challenge plus a random `state`, store them in the server session, redirect to the Entra authorize URL with scopes `User.Read` and `Mail.Read`, `prompt=select_account`. MSAL adds `offline_access` by itself, so do not pass it explicitly.
 - `GET /auth/callback`: read `state` and the verifier from the session and delete both immediately, whether or not validation succeeds, so they work only once. Validate `state`, exchange the code, call `session.regenerate()`, store only the `homeAccountId` in the new session, and redirect to `FRONTEND_URL`.
 - Token cache: persisted with msal-node-extensions (DPAPI on Windows) at `<DATA_DIR>/token-cache.bin`. Every Graph call gets its token via `acquireTokenSilent`.
 - Session: `express-session` with a small SQLite-backed store (`db/sessionStore.ts`, table `sessions`), so a restart keeps the user signed in. The cookie is httpOnly, lasts 12 hours, is signed with `SESSION_SECRET`, and uses `SameSite=Lax`, not Strict: Entra returns the browser to `/auth/callback` through a cross-site redirect, a Strict cookie is not sent on it, and login would fail because `state` and the verifier are lost. Use `secure: false` on `http://localhost`, and `secure: true` if the app ever moves to HTTPS. The session holds only the `homeAccountId`.
@@ -106,11 +110,11 @@ Base URL `https://graph.microsoft.com/v1.0`. Every request sends `Authorization:
 - Timeouts and shutdown: every request has a timeout (default 30 seconds, `GRAPH_TIMEOUT_MS`) and an `AbortController`. On shutdown or purge, abort all in-flight requests and stop the scheduler before closing the database.
 - Concurrency: a global limiter of 4 in-flight requests. This is a conservative, configurable default: Outlook limits apply per app and per mailbox, and sub-requests inside a `$batch` still count toward them.
 - Paging: a helper follows `@odata.nextLink` until `@odata.deltaLink` or the end of results. Follow `nextLink` and `deltaLink` URLs verbatim; never rebuild or edit them. Never rely on `$top` alone.
-- `$batch`: at most 20 sub-requests per call and at most 2 concurrent batch calls. Parse every sub-response status individually and retry only the items that returned 429 or 5xx, for at most 3 passes per batch; items still failing after that are reported failed per item. Each sub-request carries its own `Prefer: IdType="ImmutableId"` header, because the header applies only to the request that carries it.
-- Immutable IDs: send the header on every message call (delta, get, patch, move). Folder IDs are already stable and need no header. A move destination is a folder id or a well-known name.
-- Persistent errors: when retries are exhausted, record the error in `sync_state.error` (for sync) or the per-item result (for actions) and surface it in `/api/sync/status` `warnings` and the UI. A failed background job MUST NOT disappear silently.
+- `$batch`: optional, and only for GET sub-requests. At most 20 sub-requests per call and at most 2 concurrent batch calls. Parse every sub-response status individually and retry only the items that returned 429 or 5xx, for at most 3 passes per batch; items still failing after that are reported failed per item. Each sub-request carries its own `Prefer: IdType="ImmutableId"` header, because the header applies only to the request that carries it.
+- Immutable IDs: send the header on every message call (delta and get). Folder IDs are already stable and need no header. Read-only guard: the Graph wrapper MUST send only GET requests (plus POST to `/$batch` whose sub-requests are all GET) and MUST throw on any other method or sub-request method. No code path may PATCH, PUT, POST (other than that batch), or DELETE against Graph.
+- Persistent errors: when retries are exhausted, record the error in `sync_state.error` (for sync) and surface it in `/api/sync/status` `warnings` and the UI. A failed background job MUST NOT disappear silently.
 - Message `$select`: `id,conversationId,subject,from,sender,toRecipients,ccRecipients,receivedDateTime,sentDateTime,isRead,importance,hasAttachments,flag,categories,bodyPreview,parentFolderId,inferenceClassification,isDraft,webLink`.
-- Functions in `mailApi.ts`: `getMe`, `listFolders`, `getWellKnownFolder(name)`, `messagesDelta(folderId, deltaLinkOrNull)`, `getMessage(id)` (fresh state), `getMessageBody(id)`, `getConversationMessages(conversationId)` (`$filter=conversationId eq ...` on `/me/messages`; if Graph rejects it, for example with InefficientFilter, fall back to local data and mark the result unverified), `patchMessage(id, patch)`, `moveMessage(id, destinationId)`, `batch(requests)`.
+- Functions in `mailApi.ts`: `getMe`, `listFolders`, `getWellKnownFolder(name)`, `messagesDelta(folderId, deltaLinkOrNull)`, `getMessage(id)` (fresh state), `getMessageBody(id)`, `getConversationMessages(conversationId)` (`$filter=conversationId eq ...` on `/me/messages`; if Graph rejects it, for example with InefficientFilter, fall back to local data and mark the result unverified), `batch(requests)` (GET only).
 
 ## 8. Local database
 
@@ -158,8 +162,6 @@ CREATE TABLE vip (id INTEGER PRIMARY KEY, pattern TEXT NOT NULL UNIQUE, kind TEX
   label TEXT, group_name TEXT);   -- kind: address | domain
 CREATE TABLE rules (id INTEGER PRIMARY KEY, name TEXT, position INTEGER, enabled INTEGER,
   conditions_json TEXT, actions_json TEXT);
-CREATE TABLE action_log (id INTEGER PRIMARY KEY, batch_id TEXT, ts TEXT, message_id TEXT,
-  action TEXT, params_json TEXT, status TEXT, error TEXT, undo_json TEXT);
 CREATE TABLE ai_results (message_id TEXT PRIMARY KEY, content_hash TEXT, model TEXT,
   result_json TEXT, created_at TEXT);
 ```
@@ -168,7 +170,7 @@ CREATE TABLE ai_results (message_id TEXT PRIMARY KEY, content_hash TEXT, model T
 
 FTS rules: write messages only with `INSERT ... ON CONFLICT(id) DO UPDATE`, never `INSERT OR REPLACE`, so the update trigger fires and the index follows subject and sender changes. Run `INSERT INTO messages_fts(messages_fts) VALUES('rebuild')` after any migration that touches existing rows. Never run `VACUUM`, which can renumber rowids and desync the index.
 
-Retention: an hourly job clears `undo_json` after 24 hours, deletes `action_log` rows after 30 days, deletes expired `sessions`, and deletes `ai_results` older than 90 days.
+Retention: an hourly job deletes expired `sessions` and deletes `ai_results` older than 90 days.
 
 Backup: the mailbox cache can be rebuilt by a resync, so it needs no backup. What cannot be rebuilt is VIPs, rules, scoring settings and dismissals. `POST /api/data/export` returns those as one JSON file and `POST /api/data/import` restores them, validated with zod. For a file-level backup use the SQLite online backup API (`db.backup()` in better-sqlite3) through `npm run backup`, never a plain copy of the `.sqlite` file while WAL mode is active. A test MUST export, purge, import and compare.
 
@@ -220,7 +222,7 @@ Tiers use `score`: critical 80 and above, high 60 to 79, medium 30 to 59, low be
 A rule has `conditions` (all must match) and `actions`.
 
 - Condition types: `senderIsVip`, `senderMatches`, `textContains[]`, `unreadOlderThanHours`, `hasAttachments`, `importance`, `folder`, `toMeDirectly`.
-- Action types: `addCategory`, `setMinScore`, `addScoreBonus`. The two score actions change only the effective `score`, never `base_score`, and are reapplied from scratch on every recompute.
+- Action types (local only, never written to Outlook): `addCategory`, `setMinScore`, `addScoreBonus`. The two score actions change only the effective `score`, never `base_score`, and are reapplied from scratch on every recompute.
 - Combining score actions: sum the bonuses of all matching rules, then apply the highest `setMinScore` among them as a floor: `score = clamp(max(base_score + bonuses, highestMinScore), 0, 100)`. Rules never lower a score. The breakdown records each rule that contributed.
 - Seed rules: (1) VIP sender in group Manager gives category Management and min score 60. (2) Urgency keywords give category Urgent. (3) Unread over 48 hours gives Action Required. (4) Approval keywords (approve, approval, review, signoff) give Action Required.
 - `POST /api/rules/preview` returns match counts and a sample, with no writes.
@@ -234,31 +236,15 @@ Limitation: a reply that sits in a folder that is not synced, or that is older t
 ### 10.5 Categories
 
 - Managed set: Action Required, Waiting For Response, Urgent, Finance, HR, IT, Management, Customer, Vendor, Personal, Archive.
-- Auto categories are stored locally in `auto_categories_json`. The setting `writeAutoCategoriesToOutlook` defaults to false.
-- When true, write only categories from the managed set, and merge with the existing array. Graph replaces the whole `categories` array on PATCH, so never drop categories the system did not add.
-- Merge against fresh Outlook state, never the SQLite copy alone: GET the message's current `categories` immediately before the PATCH (two `$batch` passes for bulk work: all GETs, then all PATCHes), merge, then PATCH the full array. If the response lacks what was requested, or the categories changed between the GET and the PATCH, retry up to 3 times, then report `conflict` for that item.
-- Manual categorization from the UI always writes to Outlook, using the same merge.
-- Category names are written to messages as-is. Outlook's master category list is out of scope for v1, because creating entries needs `MailboxSettings.ReadWrite`, which this app does not request. Names missing from the master list still work but show without a color.
+- Categories are stored locally in `auto_categories_json` and shown in the app only. The app never writes categories to Outlook, and there is no `writeAutoCategoriesToOutlook` setting. The `categories` field read from Graph is displayed as-is and is never modified.
 
-## 11. Actions
+## 11. Read-only guarantee (replaces the former Actions section)
 
-- markRead, markUnread: PATCH `/me/messages/{id}` with `isRead`.
-- flag, unflag, complete: PATCH with `flag.flagStatus` set to `flagged`, `notFlagged` or `complete`.
-- categorize: `GET the message's current categories, merge, then PATCH the full array (section 10.5)`.
-- move: POST `/me/messages/{id}/move` with `destinationId` (a folder id or a well-known name).
-- archive: move to the well-known `archive` folder. Check that it exists at the start of each sync. If it does not, show a persistent warning in `/api/sync/status` and a UI banner, and disable Archive. The backend runs headless, so it never prompts on the console.
-- delete: move to the well-known `deleteditems` folder. The Graph DELETE call is not implemented.
-
-Rules for all actions:
-
-- Bulk actions run through `$batch` in chunks of 20 (section 7) and return per-item results `{id, ok, error, noop, conflict}`. The limit is 500 ids per request.
-- Drafts are excluded from scoring, cleanup candidates and bulk actions. The API rejects draft ids with `draft_not_supported`.
-- Folder edge cases: deleting a message already in Deleted Items, or archiving one already in Archive, is a no-op success (`noop: true`). The UI hides those buttons for such messages.
-- Partial success is a first-class state. Update the local row optimistically; on failure, roll back only the items that failed, using their own per-item results. The UI shows each message as done, failed, conflict or noop and offers Retry failed. After a batch, reconcile the affected messages with Outlook.
-- Any request touching more than 25 messages, and any delete, requires `confirmed: true`. Otherwise respond 409 `confirmation_required`.
-- Write one `action_log` row per message with undo data (previous folder, read state, flag, categories) and the post-action state. Undo first re-fetches each message's current Outlook state and restores an item only if that state still equals the post-action state; otherwise the item returns `conflict` and nothing changes. `POST /api/actions/undo/{batchId}` works within 24 hours, after which `undo_json` is cleared.
-- One-click cleanup is preview-then-confirm. The preview shows the exact number of affected messages, the destination and a sample; the confirm request echoes that count, and the run rejects it if the count has changed. Default candidates: Inbox, not a draft, tier low, unread and received more than 30 days ago, `inferenceClassification = other`, not flagged, not VIP. The run re-validates every candidate against these criteria. Default destination is Archive. Nothing runs automatically.
-- Nothing in this app sends email.
+- The app has no mailbox write actions: no move, archive, delete, flag, read or unread change, or category change. Nothing in this app sends email.
+- The only Graph permissions are `User.Read`, `Mail.Read` and `offline_access` (section 5). Graph would reject writes even if code tried.
+- The Graph wrapper enforces GET-only access (section 7), with one exception: POST to `/$batch` is allowed only when every inner sub-request is GET. Local changes (VIPs, rules, settings, dismissals, local categories) never reach Outlook.
+- Mail is changed by the owner in Outlook itself. The app picks those changes up through delta sync.
+- `webLink` is shown as an Open in Outlook link so the owner can act there.
 
 ## 12. REST API
 
@@ -271,9 +257,6 @@ GET  /api/sync/status                              POST /api/sync/run
 GET  /api/dashboard/summary?tz=
 GET  /api/messages?view=&folder=&category=&minScore=&q=&sort=&order=&offset=&limit=
 GET  /api/messages/{id}                            (fetches the body live from Graph)
-POST /api/messages/actions                         body: {ids, action, params, confirmed}
-POST /api/actions/undo/{batchId}
-GET  /api/cleanup/preview                          POST /api/cleanup/run
 GET  /api/folders
 GET|PUT /api/vip        GET|PUT /api/rules       POST /api/rules/preview
 GET|PUT /api/settings   POST /api/data/purge | export | import
@@ -287,8 +270,7 @@ Search (`q`): treat user input as plain text, never as FTS5 syntax. Split on whi
 ### 12.1 Response shapes
 
 - Success: `{ data: <object> }`. List: `{ items: [...], total, offset, limit }`, where `total` is the full count for the current filters. AG Grid's infinite row model needs it to know the last row.
-- Error: the HTTP status plus `{ error: { code, message, requestId? } }`. Codes: `login_required`, `forbidden`, `not_found`, `validation_error`, `confirmation_required`, `draft_not_supported`, `throttled`, `graph_error`, `internal_error`.
-- Action responses: `{ data: { batchId, results: [{ id, ok, error?, noop?, conflict? }] } }`.
+- Error: the HTTP status plus `{ error: { code, message, requestId? } }`. Codes: `login_required`, `forbidden`, `not_found`, `validation_error`, `throttled`, `graph_error`, `internal_error`.
 - `GET /api/dashboard/summary` returns `{ data: { counts: { unread, priority, flagged, waiting, vip, unread48, attachments, today }, actionQueue: MessageRow[], topPriority: MessageRow[], dailyVolume: [{ date, count }] } }`.
 - `GET /api/sync/status` returns `{ data: { phase, folder, counts, lastSuccessAt, lastError, nextRunAt, warnings: string[] } }`.
 - `GET /api/messages/{id}` returns the same row plus `breakdown` and the raw `bodyHtml` from Graph. The browser sanitizes it (section 13).
@@ -328,14 +310,14 @@ All metrics count Inbox messages that are not drafts (`folder_id` is the Inbox, 
 - Navbar: Home, Priority Inbox, Analytics, Settings, a sync status chip (last sync time, progress, errors), Sign out.
 - Login: one button that navigates to `/auth/login`. The app shows it on any 401 `login_required`.
 - Home (Dashboard): eight metric cards, each linking to the matching grid view: Unread, Priority (Inbox, score 60 or more, and unread or flagged), Flagged, Waiting For Reply, Manager/VIP unread, Unread over 48h, With attachments (Inbox, unread), Today's emails. Below them: ActionQueue (top 10 by score among unread, flagged or waiting), PriorityCard list (top 5), and a small daily volume chart. Day boundaries use the `tz` setting.
-- PriorityInbox: EmailGrid built on AG Grid's Infinite Row Model (page size 100, server-side sort and filter). Columns: Priority (colored score badge with breakdown tooltip), Sender, Subject, Received, Importance, Category, Attachment icon, Flag, Actions menu. A toolbar offers view chips, category filter, min score, search box and, on selection, bulk actions.
+- PriorityInbox: EmailGrid built on AG Grid's Infinite Row Model (page size 100, server-side sort and filter). Columns: Priority (colored score badge with breakdown tooltip), Sender, Subject, Received, Importance, Category, Attachment icon, Flag, Open in Outlook link. A toolbar offers view chips, category filter, min score, search box.
 - Detail drawer: header, categories, body fetched on open and rendered in a sandboxed iframe without `allow-scripts`, sanitized with DOMPurify, remote images blocked until the owner clicks Load images, links open in a new tab with `noopener`, plus an Open in Outlook link from `webLink`.
-- Settings: VIP and groups editor, rules editor with preview, scoring weights and keywords, sync window and interval, folders to sync, the Write auto categories to Outlook toggle, timezone and business hours, Purge local data.
-- Behavior: optimistic updates with an Undo snackbar, error snackbars, loading skeletons, and stale data shown with a Last synced label when offline. Keyboard shortcuts (j and k to move, e to archive, u to toggle read) SHOULD be supported.
+- Settings: VIP and groups editor, rules editor with preview, scoring weights and keywords, sync window and interval, folders to sync, timezone and business hours, Purge local data.
+- Behavior: error snackbars, loading skeletons, and stale data shown with a Last synced label when offline. Keyboard shortcuts (j and k to move) SHOULD be supported.
 
 Body rendering (decision): the drawer renders the body with `srcDoc` in an iframe whose `sandbox` has no `allow-scripts`. DOMPurify runs first, and at sanitize time every `img src` and CSS `url()` that points to a remote host is rewritten to a `data-blocked-src` attribute. The iframe document carries its own CSP meta tag: `default-src 'none'; style-src 'unsafe-inline'; img-src data:`. Load images re-renders the `srcDoc` with the original URLs restored and `img-src data: https:`. A `srcdoc` iframe also inherits the app's CSP, so the app CSP allows `img-src 'self' data: https:`, and the blocking lives in the sanitizer and the iframe's own CSP.
 
-Data freshness: every page shows when it was last synced. When the last sync failed, the app is offline or login is required, show a Cached data, not current banner, and never present cached rows as freshly synchronized. Bulk action results are shown per message as done, failed, conflict or noop, with Retry failed.
+Data freshness: every page shows when it was last synced. When the last sync failed, the app is offline or login is required, show a Cached data, not current banner, and never present cached rows as freshly synchronized.
 
 ## 14. Analytics
 
@@ -357,7 +339,7 @@ Response-time exclusions: ignore automatic replies (subject starting with Automa
 - Output is validated with zod: `summary` (max 40 words), `suggestedCategory` (from the managed set), `confidence` (0 to 1), `actionRequired` (boolean), `dueHint` (string or null).
 - Results are cached by message id, content hash (a hash of sender, subject and the exact text sent) and model. If a message changes so that its hash changes, the old result is marked stale and hidden, and the message is requeued. Results older than 90 days are purged. Processing runs in a rate-limited background queue for new Inbox messages with a daily cap (default 500).
 - Endpoints: `GET /api/ai/messages/{id}` (cached result or 404), `POST /api/ai/messages/{id}/analyze` (force a run), `GET /api/ai/digest` (latest digest), `POST /api/ai/digest/run`.
-- Auto-apply only at confidence 0.85 or higher, to local categories. Writing to Outlook follows `writeAutoCategoriesToOutlook`. The UI shows confidence next to AI categories.
+- Auto-apply only at confidence 0.85 or higher, to local categories. Categories are never written to Outlook. The UI shows confidence next to AI categories.
 - Daily digest: generated at `digestTime` (default 07:30 local time) and stored in `settings` under `dailyDigest` with its date. If the app was closed at that time, the scheduler generates today's digest once, on the next start or tick after the time has passed, when none exists for today's local date.
 
 ## 16. Security and privacy
@@ -395,12 +377,12 @@ AI_ENABLED=false
 
 ## 18. Testing
 
-- Unit tests: scoring (null subject, missing sender, VIP exact, domain and subdomain matching, keyword family counted once, clamping, recompute is idempotent), keyword engine (Arabic with diacritics and tatweel, Arabic punctuation, attached prefixes, mixed Arabic and English, a case where an ASCII word boundary would fail), rules engine (score actions never change `base_score`, two `setMinScore` rules), delta applier (add, update, `@removed`, 410 resync), retry and backoff (429 with Retry-After, 5xx, forced refresh after 401), batch chunking and partial failure, waiting-for-reply logic (auto-replies, dismissal cleared by a new message), FTS escaping and phrase search, and the FTS index following subject and sender changes.
+- Unit tests: scoring (null subject, missing sender, VIP exact, domain and subdomain matching, keyword family counted once, clamping, recompute is idempotent), keyword engine (Arabic with diacritics and tatweel, Arabic punctuation, attached prefixes, mixed Arabic and English, a case where an ASCII word boundary would fail), rules engine (score actions never change `base_score`, two `setMinScore` rules), delta applier (add, update, `@removed`, 410 resync), retry and backoff (429 with Retry-After, 5xx, forced refresh after 401), waiting-for-reply logic (auto-replies, dismissal cleared by a new message), FTS escaping and phrase search, and the FTS index following subject and sender changes.
 - Sync resilience tests (mocked Graph): restart during initial sync resumes; network drop; expired token; progress saved in the same transaction as each page; raising the sync window triggers a full resync while lowering it only cleans up; every failure appears in `warnings` and none needs a database reset.
-- Security and action tests: wrong Host or Origin and a missing `X-Requested-With` are rejected; the OAuth callback works with a Lax cookie and a replayed `state` fails; the session id changes after login; no endpoint returns token-cache contents; purge removes the database, WAL and SHM files, token cache, sessions and logs; export, purge and import round-trips; category merge re-reads Outlook state and reports `conflict` after repeated concurrent changes; undo conflict; a cleanup run with a changed count is rejected.
+- Security and read-only tests: wrong Host or Origin and a missing `X-Requested-With` are rejected; the OAuth callback works with a Lax cookie and a replayed `state` fails; the session id changes after login; no endpoint returns token-cache contents; purge removes the database, WAL and SHM files, token cache, sessions and logs; export, purge and import round-trips; the read-only guard throws on any Graph call that is not a GET, except POST to `/$batch` whose inner requests are all GET, and throws on a `$batch` with any non-GET inner request; no code path issues a Graph write.
 - Integration tests with `msw` mocking Graph. No test may call live Graph.
 - Performance: a synthetic dataset of 50,000 messages (60 percent Inbox, 30 percent Sent Items, 10 percent other, 255-character previews, 5,000 distinct senders). On a reference machine (Windows 11, 4 cores, 16 GB RAM, SSD), the p95 of grid page queries (by received date, by score, and an FTS search) MUST be under 200 ms.
-- A manual live-tenant checklist in the README: login, initial sync, incremental sync, each action, undo, token expiry, Conditional Access prompt.
+- A manual live-tenant checklist in the README: login, initial sync, incremental sync, token expiry, Conditional Access prompt.
 
 ## 19. Phases and acceptance criteria
 
@@ -408,7 +390,7 @@ AI_ENABLED=false
 - Phase 1, auth: login, callback, silent refresh, logout, DPAPI token cache, SQLite session store, Host and Origin checks. Done when a real login shows the user's name, a restart keeps the user signed in, the callback works with the Lax cookie, and `/api/*` returns 401 without a session.
 - Phase 2, database and sync: migrations, initial and incremental delta sync, 410 recovery, window changes, status endpoint. Done when, on the synthetic 50,000-message dataset, the initial sync shows progress, resumes after an interruption and meets the query target; the sync resilience tests pass; and on a live tenant, login and sync work and an edit made in Outlook appears locally within 2 minutes.
 - Phase 3, scoring, read API, dashboard and grid: scoring, rules engine, waiting logic, messages and dashboard endpoints, Home and PriorityInbox pages. Done when all eight cards match the section 12.2 definitions against direct SQL counts and scoring and keyword tests pass.
-- Phase 4, actions: all actions, `$batch`, confirmation, undo, cleanup preview. Done when a bulk move of 100 messages succeeds, a partial failure is reported per item, category merges use fresh Outlook state, and undo restores state or reports `conflict`.
+- Phase 4, read-only enforcement (replaces the former write phase): the GET-only Graph guard (with the GET-only `/$batch` exception) and its tests. Done when the guard tests pass and a code search finds no Graph PATCH, PUT, DELETE, or POST other than a GET-only `/$batch`.
 - Phase 5, analytics and settings: all charts, VIP and rules editors, settings, export and import, purge. Done when every chart renders on the 50k dataset, settings changes alter scores after the next recompute, and the purge and export round-trip tests pass.
 - Phase 6, AI (optional): provider, cache, queue, digest. Done when results validate against the schema, the daily cap is enforced, and a missed digest is generated on the next start.
 
@@ -416,23 +398,23 @@ AI_ENABLED=false
 
 Stop and ask, or record an assumption in DECISIONS.md, for each of these:
 
-1. Does the tenant allow this app registration and user consent (section 5)? YES
-2. Who are the Manager and VIP senders (addresses or domains, with group names)? adresses
-3. Should auto categories be written into Outlook (default: no)?
-4. Timezone and business hours for dashboard days and response-time stats. timezone (GMT+2)Cairo and Business hours are from 9 to 5
-5. Sync window (default 90 days) and whether Deleted Items is synced (Archive is synced by default). YES
-6. Is an AI provider approved for mail content, and which one? No
-7. Does the mailbox have an Archive folder (section 11)? No
-8. Is Windows 11 the deployment OS, or is Windows 10 covered by ESU? windows 10 and 11
+1. Does the tenant allow this app registration and user consent (section 5)? a- YES
+2. Who are the Manager and VIP senders (addresses or domains, with group names)? a- adresses
+3. Removed in v1.3: the app never writes to the mailbox, so categories stay local. (Earlier answer: no.)
+4. Timezone and business hours for dashboard days and response-time stats?. a- timezone (GMT+2)Cairo and Business hours are from 9 to 5
+5. Sync window (default 90 days) and whether Deleted Items is synced (Archive is synced by default). a- YES
+6. Is an AI provider approved for mail content, and which one? a- No
+7. Does the mailbox have an Archive folder (section 9)? a- Yes
+8. Is Windows 11 the deployment OS, or is Windows 10 covered by ESU? a- windows 10 and 11
 
 ## 21. Decisions from the 20 November review
 
-These answer review questions Q8 to Q12. Change them only with the owner.
+These answer review questions Q8 to Q12. Historical record: any mention of writes or actions in these lists is superseded by v1.3. Change them only with the owner.
 
 1. `DATA_DIR` moves everything: the database, token cache and logs.
 2. Sessions persist in SQLite (section 6), not rehydrated from the MSAL cache.
 3. A new message in a conversation clears its Waiting dismissal (section 10.4).
-4. Category names are written to messages as-is. The Outlook master category list is out of scope for v1 (section 10.5).
+4. Categories are local only and never written to Outlook (section 10.5).
 5. AI uses the roughly 255-character preview by default. Full-body reading is an opt-in setting (section 15).
 
 From the 21 November review (v1.2):
@@ -443,6 +425,11 @@ From the 21 November review (v1.2):
 4. The mailbox cache is not backed up, because it is rebuildable. VIPs, rules, settings and dismissals are exported as JSON instead.
 5. Host and Origin validation and `DATA_DIR` permissions replace the assumption that loopback isolates Windows users.
 6. Windows 10 and 11 is the target OS.
+
+From the 24 November review (v1.3):
+
+1. The app is read-only. No mailbox writes exist in any milestone, and `Mail.Read` replaces `Mail.ReadWrite`.
+2. The Actions section, write endpoints, action log, undo and cleanup are removed.
 ---
 
 **Appendix A: Safety Contracts (Milestone 1)**
@@ -459,21 +446,14 @@ From the 21 November review (v1.2):
 - Honor Retry-After on each subresponse, not just on the batch response.
 - Test: a batch with one throttled subresponse delays only the retry of that request.
 
-**Appendix B: Milestone 1 scope**
+**Appendix B: Milestone 1 scope (implemented)**
 
 In scope: login → read-only sync → restart/resume → minimal grid.
 
-Out of scope until Milestone 2 (write milestone):
-- All mailbox writes, including moves, deletes, flags, and categories
-- Automatic category writes
-- Bulk actions
+Milestone 2 (the former write milestone) is cancelled. No milestone adds mailbox writes: no moves, deletes, flags, categories or bulk actions.
 
-**Appendix C: Deferred safety contracts**
+**Appendix C: Deferred write contracts (removed in v1.3)**
 
-Specify these before any write code exists:
-1. **Category writes:** verify conditional-write support on the exact endpoint, since it is unconfirmed. Undo touches only the fields the action changed.
-2. **Exact-message confirmation:** a server-side preview stores the exact message IDs, action, destination, and expiry. Execute only that set, never newly qualifying messages.
-3. **Crash safety:** record the intent before sending. Add an "unknown/reconciling" state. After a timeout or restart, check mailbox state before retrying. Test "server succeeded, client timed out."
-4. **Rollout order:** one-message recovery first, then bulk actions.
+These contracts covered category writes, exact-message confirmation, crash safety for writes and write rollout. They are removed because the app has no write code.
 
-**Spec status:** frozen after this patch. Further changes only in response to a failure found while building.
+**Spec status:** frozen after the v1.3 read-only patch. Milestone 1 stays implemented. Further changes only in response to a failure found while building.

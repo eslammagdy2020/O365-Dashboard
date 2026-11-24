@@ -71,7 +71,7 @@ export async function acquireGraphToken(
 
   const result = await client.acquireTokenSilent({
     account,
-    scopes: ['User.Read', 'Mail.ReadWrite'],
+    scopes: ['User.Read', 'Mail.Read'],
     ...(claims ? { claims } : {}),
   });
   return result.accessToken;

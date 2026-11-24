@@ -1,5 +1,9 @@
 # Questions & gaps log
 
+## Spec v1.3 adoption decision (24 Nov 2026)
+
+Owner approved adopting the supplied read-only v1.3 spec verbatim in place of v1.2, with the change recorded here and in `STATUS.md`. M1 remains unchanged; the former write milestone M2 is cancelled. The app uses `Mail.Read` and enforces GET-only Graph requests (except GET-only `/$batch`). Owner must remove `Mail.ReadWrite` from Entra and sign in again. Frozen M1 artifacts, including `action_log` and its assertion, remain untouched. Phase 4 is complete; Phase 3 and Phase 5 remain pending. Optional Phase 6 AI was declined and is out of scope.
+
 ## Grid rendering lane — owner-approved (23 Nov 2026)
 
 Owner confirmed a fresh frontend defect after the L1/L2 approval: the AG Grid panel is blank in the owner's Edge even though all 4 matching rows are present in the DOM with correct text, correct geometry, hidden overlay, no console errors, and correct network response. Disabling `bis_skin_checked`-injecting extensions did not help. Owner approved one worker on `coarena/gpt-6-luna`, frontend-only: `frontend/src/index.css`, `frontend/src/components/EmailGrid.tsx`, optional `frontend/src/pages/Mail.tsx`, plus a regression test. Intent: give `.email-grid` a definite height, force a paint/redraw after rows arrive, remove the dead inline style fallback; verify with full suite, lint, frontend build and a headless screenshot. No backend/schema/contract changes.
@@ -128,4 +132,3 @@ Verified: `npm test -- backend/test/db.test.ts` → 3 passed; full `npm test` �
 `backend/package.json` currently declares only dotenv, express, helmet and zod. T4 requires `better-sqlite3` but T4's allowed files are only `backend/src/db/db.ts` and `backend/test/db.test.ts`; no package manifest is allowed. The same gap will hit T2 (`@azure/msal-node`, `@azure/msal-node-extensions`, `express-session`), T3/T5/T6/T9 (`msw`), T8 (`dompurify`), and the frontend tickets (`ag-grid-community`, MUI, TanStack Query, etc.). Installing with `--no-save` would leave the build unreproducible on a clean checkout.
 
 Recommendation: authorise one one-off dependency worker (same model, no parallel work) to add **all Milestone 1 dependencies** from spec §3 to `backend/package.json` and `frontend/package.json` now, before T4 is dispatched. Alternative: expand each ticket's allowed files to include the manifest it needs. **Owner answered: "yes do the recommendation" — one-off dependency worker dispatched on `coarena/gpt-6-luna`; Q16 resolved and verified: test 13/13, lint, build, `npm ls --depth=0` all clean.**
-

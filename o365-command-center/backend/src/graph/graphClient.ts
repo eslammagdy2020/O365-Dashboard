@@ -6,7 +6,7 @@ const GRAPH_BASE_URL = 'https://graph.microsoft.com/v1.0';
 const MAX_CONCURRENCY = 4;
 const MAX_CONCURRENT_BATCHES = 2;
 const RETRY_STATUSES = new Set([429, 503, 504]);
-const SCOPES = ['User.Read', 'Mail.ReadWrite'];
+const SCOPES = ['User.Read', 'Mail.Read'];
 
 type Waiter = { count: number; resolve: () => void };
 
@@ -81,6 +81,36 @@ export class GraphError extends Error {
   }
 }
 
+export function assertReadOnlyRequest(url: string, init: RequestInit): void {
+  const method = (init.method ?? 'GET').toUpperCase();
+  if (method === 'GET') return;
+
+  if (method === 'POST' && url === '/$batch' && typeof init.body === 'string') {
+    try {
+      const body: unknown = JSON.parse(init.body);
+      if (
+        typeof body === 'object' &&
+        body !== null &&
+        'requests' in body &&
+        Array.isArray(body.requests) &&
+        body.requests.every(
+          (request: unknown) =>
+            typeof request === 'object' &&
+            request !== null &&
+            !Array.isArray(request) &&
+            ((request as { method?: unknown }).method ?? 'GET') === 'GET',
+        )
+      ) {
+        return;
+      }
+    } catch {
+      // Malformed batch bodies are rejected below without exposing their contents.
+    }
+  }
+
+  throw new GraphError(400, 'forbidden', undefined, 'read-only: request is not permitted');
+}
+
 export type GraphClientOptions = {
   timeoutMs?: number;
   fetcher?: typeof fetch;
@@ -139,6 +169,7 @@ export class GraphClient {
     acquireSlot = true,
     slotCount = 1,
   ): Promise<T> {
+    assertReadOnlyRequest(url, init);
     let forceRefresh = false;
     let refreshed = false;
     let attempt = 0;
